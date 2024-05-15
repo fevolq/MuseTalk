@@ -8,10 +8,27 @@ import gdown
 from configs import config
 
 
+def retry(max_retries=3):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    print(f"An error occurred: {e}. Retrying... (Attempt {retries + 1}/{max_retries})")
+                    retries += 1
+            print(f"Maximum retries reached ({max_retries}). Failed to execute function.")
+            raise e
+        return wrapper
+    return decorator
+
+
+@retry(3)
 def download_from_hf(repo_id, local_dir, *, force_download=False, revision=None):
     if os.path.exists(local_dir) and not force_download:
         return
-    print(f'Download {repo_id}')
+    print(f'Start download {repo_id}')
     os.makedirs(local_dir, exist_ok=True)
     try:
         snapshot_download(
@@ -22,14 +39,15 @@ def download_from_hf(repo_id, local_dir, *, force_download=False, revision=None)
             revision=revision,
         )
     except Exception as e:
-        print(f'An error occurred while downloading {repo_id}: {str(e)}')
         shutil.rmtree(local_dir)
+        raise e
 
 
+@retry(3)
 def download_file(url, file_path, name: str):
     if os.path.exists(file_path):
         return
-    print(f'Download {name}')
+    print(f'Start download {name}')
     os.makedirs(str(Path(file_path).parent), exist_ok=True)
     gdown.download(url, file_path, quiet=False)
 

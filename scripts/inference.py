@@ -34,7 +34,7 @@ class Process:
         self.timesteps = torch.tensor([0], device=device)
         if config.FLOAT16 is True:
             self.pe = self.pe.half()
-            self.vae.vae.vae = self.vae.vae.vae.half()
+            self.vae.vae = self.vae.vae.half()
             self.unet.model = self.unet.model.half()
 
         self.state = states.State.PENDING
@@ -62,7 +62,6 @@ class Process:
             frame_list = read_imgs(input_images)
         else:
             print("extracting landmarks...time consuming")
-            print(self.options.bbox_shift)
             coord_list, frame_list = get_landmark_and_bbox(input_images, self.options.bbox_shift)
             with open(self.crop_coord_path, 'wb') as f:
                 pickle.dump(coord_list, f)
