@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 import torch
 
+from configs import config
+
 ffmpeg_path = os.getenv('FFMPEG_PATH')
 if ffmpeg_path is None:
     print("please download ffmpeg-static and export to FFMPEG_PATH. \nFor example: export FFMPEG_PATH=/musetalk/ffmpeg-4.4-amd64-static")
@@ -16,10 +18,10 @@ from musetalk.models.vae import VAE
 from musetalk.models.unet import UNet,PositionalEncoding
 
 def load_all_model():
-    audio_processor = Audio2Feature(model_path="./models/whisper/tiny.pt")
-    vae = VAE(model_path = "./models/sd-vae-ft-mse/")
-    unet = UNet(unet_config="./models/musetalk/musetalk.json",
-                model_path ="./models/musetalk/pytorch_model.bin")
+    audio_processor = Audio2Feature(model_path=f"{config.MODEL_DIR}/whisper/tiny.pt")
+    vae = VAE(model_path = f"{config.MODEL_DIR}/sd-vae-ft-mse/")
+    unet = UNet(unet_config=f"{config.MODEL_DIR}/MuseTalk/musetalk/musetalk.json",
+                model_path =f"{config.MODEL_DIR}/MuseTalk/musetalk/pytorch_model.bin")
     pe = PositionalEncoding(d_model=384)
     return audio_processor,vae,unet,pe
 

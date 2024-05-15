@@ -1,161 +1,177 @@
-import argparse
 import os
-from omegaconf import OmegaConf
+import traceback
+from pathlib import Path
+from argparse import Namespace
+import copy
+import sys
+from tqdm import tqdm
+
 import numpy as np
 import cv2
 import torch
 import glob
 import pickle
-from tqdm import tqdm
-import copy
 
-from musetalk.utils.utils import get_file_type,get_video_fps,datagen
-from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from musetalk.utils.utils import get_file_type, get_video_fps, datagen
+from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
 from musetalk.utils.blending import get_image
 from musetalk.utils.utils import load_all_model
 import shutil
+from scripts import states
+from configs import config
 
-# load model weights
-audio_processor, vae, unet, pe = load_all_model()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-timesteps = torch.tensor([0], device=device)
 
-@torch.no_grad()
-def main(args):
-    global pe
-    if args.use_float16 is True:
-        pe = pe.half()
-        vae.vae = vae.vae.half()
-        unet.model = unet.model.half()
-    
-    inference_config = OmegaConf.load(args.inference_config)
-    print(inference_config)
-    for task_id in inference_config:
-        video_path = inference_config[task_id]["video_path"]
-        audio_path = inference_config[task_id]["audio_path"]
-        bbox_shift = inference_config[task_id].get("bbox_shift", args.bbox_shift)
+class Process:
 
-        input_basename = os.path.basename(video_path).split('.')[0]
-        audio_basename  = os.path.basename(audio_path).split('.')[0]
-        output_basename = f"{input_basename}_{audio_basename}"
-        result_img_save_path = os.path.join(args.result_dir, output_basename) # related to video & audio inputs
-        crop_coord_save_path = os.path.join(result_img_save_path, input_basename+".pkl") # only related to video input
-        os.makedirs(result_img_save_path,exist_ok =True)
-        
-        if args.output_vid_name is None:
-            output_vid_name = os.path.join(args.result_dir, output_basename+".mp4")
-        else:
-            output_vid_name = os.path.join(args.result_dir, args.output_vid_name)
-        ############################################## extract frames from source video ##############################################
-        if get_file_type(video_path)=="video":
-            save_dir_full = os.path.join(args.result_dir, input_basename)
-            os.makedirs(save_dir_full,exist_ok = True)
-            cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
-            os.system(cmd)
-            input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
-            fps = get_video_fps(video_path)
-        elif get_file_type(video_path)=="image":
-            input_img_list = [video_path, ]
-            fps = args.fps
-        elif os.path.isdir(video_path):  # input img folder
-            input_img_list = glob.glob(os.path.join(video_path, '*.[jpJP][pnPN]*[gG]'))
-            input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-            fps = args.fps
-        else:
-            raise ValueError(f"{video_path} should be a video file, an image file or a directory of images")
+    def __init__(self, input_path: str, audio_path: str, *, options: dict):
+        self.inputPath, self.audioPath = Path(input_path), Path(audio_path)
+        self.options = Namespace(**options)
 
-        #print(input_img_list)
-        ############################################## extract audio feature ##############################################
-        whisper_feature = audio_processor.audio2feat(audio_path)
-        whisper_chunks = audio_processor.feature2chunks(feature_array=whisper_feature,fps=fps)
-        ############################################## preprocess input image  ##############################################
-        if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
+        # load model weights
+        self.audio_processor, self.vae, self.unet, self.pe = load_all_model()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.timesteps = torch.tensor([0], device=device)
+        if config.FLOAT16 is True:
+            self.pe = self.pe.half()
+            self.vae.vae.vae = self.vae.vae.vae.half()
+            self.unet.model = self.unet.model.half()
+
+        self.state = states.State.PENDING
+
+        self.basename = f'{self.inputPath.stem}-{self.audioPath.stem}'
+        self.output_vid_path = os.path.join(config.OUTPUT_DIR, f'{self.basename}.mp4')
+        self.frame_path_dir = os.path.join(config.TEMP_DIR, f'frame-{self.basename}')  # 存储原始视频帧
+        self.crop_frame_path_dir = os.path.join(config.TEMP_DIR, f'crop-{self.basename}')  # 存储结果视频帧
+        self.crop_coord_path = os.path.join(config.INPUT_DIR, self.inputPath.stem + ".pkl")  # 原始视频坐标文件
+        os.makedirs(self.frame_path_dir, exist_ok=True)
+        os.makedirs(self.crop_frame_path_dir, exist_ok=True)
+
+    def __extract(self, input_images, fps):
+        # ------------------------- extract audio feature -------------------------
+        whisper_feature = self.audio_processor.audio2feat(str(self.audioPath))
+        whisper_chunks = self.audio_processor.feature2chunks(feature_array=whisper_feature, fps=fps)
+
+        # ------------------------- preprocess input image -------------------------
+        print(f'start preprocess input image: {str(self.inputPath)}')
+        self.state = states.State.PREPROCESS_INPUT_IMG
+        if os.path.exists(self.crop_coord_path) and self.options.use_saved_coord:
             print("using extracted coordinates")
-            with open(crop_coord_save_path,'rb') as f:
+            with open(self.crop_coord_path, 'rb') as f:
                 coord_list = pickle.load(f)
-            frame_list = read_imgs(input_img_list)
+            frame_list = read_imgs(input_images)
         else:
             print("extracting landmarks...time consuming")
-            coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
-            with open(crop_coord_save_path, 'wb') as f:
+            print(self.options.bbox_shift)
+            coord_list, frame_list = get_landmark_and_bbox(input_images, self.options.bbox_shift)
+            with open(self.crop_coord_path, 'wb') as f:
                 pickle.dump(coord_list, f)
-                
-        i = 0
+
+        bbox_shift_text = get_bbox_range(input_images, self.options.bbox_shift)
+        print(bbox_shift_text)
+
+        print(f'start get latents for unet: {str(self.inputPath)}')
+        self.state = states.State.CROP_IMG
         input_latent_list = []
         for bbox, frame in zip(coord_list, frame_list):
             if bbox == coord_placeholder:
                 continue
             x1, y1, x2, y2 = bbox
             crop_frame = frame[y1:y2, x1:x2]
-            crop_frame = cv2.resize(crop_frame,(256,256),interpolation = cv2.INTER_LANCZOS4)
-            latents = vae.get_latents_for_unet(crop_frame)
+            crop_frame = cv2.resize(crop_frame, (256, 256), interpolation=cv2.INTER_LANCZOS4)
+            latents = self.vae.get_latents_for_unet(crop_frame)
             input_latent_list.append(latents)
-    
+
         # to smooth the first and the last frame
         frame_list_cycle = frame_list + frame_list[::-1]
         coord_list_cycle = coord_list + coord_list[::-1]
         input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
-        ############################################## inference batch by batch ##############################################
-        print("start inference")
+
+        # ------------------------- inference batch by batch -------------------------
+        print(f'start inference: {str(self.inputPath)}')
+        self.state = states.State.INFERENCE
         video_num = len(whisper_chunks)
-        batch_size = args.batch_size
-        gen = datagen(whisper_chunks,input_latent_list_cycle,batch_size)
+        batch_size = self.options.batch_size
+        gen = datagen(whisper_chunks, input_latent_list_cycle, batch_size)
         res_frame_list = []
-        for i, (whisper_batch,latent_batch) in enumerate(tqdm(gen,total=int(np.ceil(float(video_num)/batch_size)))):
+        for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=int(np.ceil(float(video_num) / batch_size)))):
             audio_feature_batch = torch.from_numpy(whisper_batch)
-            audio_feature_batch = audio_feature_batch.to(device=unet.device,
-                                                         dtype=unet.model.dtype) # torch, B, 5*N,384
-            audio_feature_batch = pe(audio_feature_batch)
-            latent_batch = latent_batch.to(dtype=unet.model.dtype)
-            
-            pred_latents = unet.model(latent_batch, timesteps, encoder_hidden_states=audio_feature_batch).sample
-            recon = vae.decode_latents(pred_latents)
+            audio_feature_batch = audio_feature_batch.to(device=self.unet.device,
+                                                         dtype=self.unet.model.dtype)  # torch, B, 5*N,384
+            audio_feature_batch = self.pe(audio_feature_batch)
+            latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
+
+            pred_latents = self.unet.model(latent_batch, self.timesteps,
+                                           encoder_hidden_states=audio_feature_batch).sample
+            recon = self.vae.decode_latents(pred_latents)
             for res_frame in recon:
                 res_frame_list.append(res_frame)
-                
-        ############################################## pad to full image ##############################################
+
+        # ------------------------- pad to full image -------------------------
         print("pad talking image to original video")
+        self.state = states.State.PAD_IMG
         for i, res_frame in enumerate(tqdm(res_frame_list)):
-            bbox = coord_list_cycle[i%(len(coord_list_cycle))]
-            ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])
+            bbox = coord_list_cycle[i % (len(coord_list_cycle))]
+            ori_frame = copy.deepcopy(frame_list_cycle[i % (len(frame_list_cycle))])
             x1, y1, x2, y2 = bbox
             try:
-                res_frame = cv2.resize(res_frame.astype(np.uint8),(x2-x1,y2-y1))
+                res_frame = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
             except:
-#                 print(bbox)
                 continue
-            
-            combine_frame = get_image(ori_frame,res_frame,bbox)
-            cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png",combine_frame)
 
-        cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {result_img_save_path}/%08d.png -vcodec libx264 -vf format=rgb24,scale=out_color_matrix=bt709,format=yuv420p -crf 18 temp.mp4"
+            combine_frame = get_image(ori_frame, res_frame, bbox)
+            cv2.imwrite(f"{self.crop_frame_path_dir}/{str(i).zfill(8)}.png", combine_frame)
+
+        # ------------------------- gen video -------------------------
+        print("gen video")
+        self.state = states.State.GEN_VIDEO
+        temp_video_path = os.path.join(config.TEMP_DIR, f'temp-{self.basename}.mp4')
+        cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {self.crop_frame_path_dir}/%08d.png -vcodec libx264 -vf format=rgb24,scale=out_color_matrix=bt709,format=yuv420p -crf 18 {temp_video_path}"
         print(cmd_img2video)
         os.system(cmd_img2video)
-        
-        cmd_combine_audio = f"ffmpeg -y -v warning -i {audio_path} -i temp.mp4 {output_vid_name}"
+
+        cmd_combine_audio = f"ffmpeg -y -v warning -i {str(self.audioPath)} -i {temp_video_path} {self.output_vid_path}"
         print(cmd_combine_audio)
         os.system(cmd_combine_audio)
-        
-        os.remove("temp.mp4")
-        shutil.rmtree(result_img_save_path)
-        print(f"result is save to {output_vid_name}")
+
+        os.remove(temp_video_path)
+        shutil.rmtree(self.frame_path_dir)  # 移除视频原始帧
+        shutil.rmtree(self.crop_frame_path_dir)  # 移除视频结果帧
+        print(f"result is save to {self.output_vid_path}")
+
+    @torch.no_grad()
+    def run(self):
+        try:
+            if get_file_type(self.inputPath) == "video":
+                cmd = f"ffmpeg -v fatal -i {str(self.inputPath)} -start_number 0 {self.frame_path_dir}/%08d.png"
+                os.system(cmd)
+                input_images = sorted(glob.glob(os.path.join(self.frame_path_dir, '*.[jpJP][pnPN]*[gG]')))
+                fps = get_video_fps(str(self.inputPath))
+            elif get_file_type(self.inputPath) == "image":
+                input_images = [str(self.inputPath), ]
+                fps = self.options.fps
+            elif os.path.isdir(self.inputPath):  # input img folder
+                input_images = glob.glob(os.path.join(str(self.inputPath), '*.[jpJP][pnPN]*[gG]'))
+                input_images = sorted(input_images, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+                fps = self.options.fps
+            else:
+                raise ValueError(f"{self.inputPath} should be a video file, an image file or a directory of images")
+
+            self.__extract(input_images, fps)
+            self.state = states.State.END
+        except Exception as e:
+            print(traceback.format_exception(e))
+            self.state = states.State.ERROR
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--inference_config", type=str, default="configs/inference/test_img.yaml")
-    parser.add_argument("--bbox_shift", type=int, default=0)
-    parser.add_argument("--result_dir", default='./results', help="path to output")
-
-    parser.add_argument("--fps", type=int, default=25)
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--output_vid_name", type=str, default=None)
-    parser.add_argument("--use_saved_coord",
-                        action="store_true",
-                        help='use saved coordinate to save time')
-    parser.add_argument("--use_float16",
-                        action="store_true",
-                        help="Whether use float16 to speed up inference",
-    )
-
-    args = parser.parse_args()
-    main(args)
+    video = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/video/sun.mp4'))
+    audio = os.path.abspath(os.path.join(os.path.dirname(__file__), '../data/audio/sun.wav'))
+    kwargs = {
+        'use_saved_coord': False,
+        'batch_size': 8,
+        'fps': 25,
+    }
+    process = Process(video, audio, options=kwargs)
+    process.run()
+    print(f'结果视频：{process.output_vid_path}')
