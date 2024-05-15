@@ -1,0 +1,25 @@
+version: '3.9'
+
+name: ${NAME:- musetalk }
+
+services:
+  musetalk:
+    image: musetalk:0.0.1
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:- 7860 }:7860"
+    environment:
+        - CLI_ARGS=--api --float16
+    volumes:
+      - ${MODELS_DIR:- ./models}:/app/models
+      - ${RESULT_DIR:- ./results}:/app/results
+    restart: on-failure
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${DEVICE:-0}']
+              capabilities: [ gpu ]
