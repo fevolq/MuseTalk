@@ -41,7 +41,8 @@ class Worker:
     @property
     def isFinished(self):
         # 为增加state路由的时间容错率，故增加is_pending的判断
-        return not states.is_running(self.process.state) and not states.is_pending(self.process.state) if self.process else self.__isFinished
+        return (not states.is_running(self.process.state)
+                and not states.is_pending(self.process.state)) if self.process else self.__isFinished
 
     @property
     def state(self):
@@ -60,7 +61,7 @@ class Worker:
         self.process.run()
         print(f'任务结束：{self.process_id}')
         self.__state = self.process.state.value
-        self.__isFinished = not states.is_running(self.process.state)
+        self.__isFinished = True
         self.__error = states.is_error(self.process.state)
         self.output_path = self.process.output_vid_path
         self.release()
@@ -98,75 +99,59 @@ async def submit(
         options = options or '{}'
         options = json.loads(options)
     except Exception as e:
-        return JSONResponse(content={"message": f'无法解析options为JSON：{str(e)}'},
-                            status_code=status.BAD_REQUEST)
+        raise HTTPException(400, detail=f"Failed to parse options as JSON: {str(e)}", )
 
     if not isinstance(options, dict):
-        return JSONResponse(content={"message": f'无法解析options参数为dict，当前格式为：{type(options).__name__}'},
-                            status_code=status.BAD_REQUEST)
+        raise HTTPException(400,
+                            detail=f"Unable to parse the 'options' argument into a dictionary; the current format is: {type(options).name}", )
 
     new_options = copy.deepcopy(default_options)
     new_options.update(options)
 
-    worker = Worker(target, source)
-    worker.set_process(new_options)
-    success = submit_worker(worker)
-    if success:
-        return JSONResponse(content={
-            'code': 200,
-            'process_id': worker.process_id
-        },
-            status_code=status.HTTP_200_OK)
-    else:
-        return JSONResponse(content={
-            'code': 200,
-            'msg': '任务提交失败'
-        },
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    task = Worker(target, source)
+    task.set_process(new_options)
+    success = submit_worker(task)
+    if not success:
+        raise HTTPException(500, detail='The task failed to submit.', )
+
+    return JSONResponse(content={
+        'process_id': task.process_id
+    },
+        status_code=status.HTTP_200_OK)
 
 
 @app.get("/state")
 async def state(process_id: str):
-    worker: Worker = workers.get(process_id)
-    if worker is None:
-        return JSONResponse(content={
-            'code': 200,
-            'msg': f'Error process_id: {process_id}'
-        },
-            status_code=status.HTTP_404_NOT_FOUND)
+    task: Worker = workers.get(process_id)
+    if task is None:
+        raise HTTPException(404, detail=f'Error process_id: {process_id}', )
+
+    if task.error:
+        raise HTTPException(500, detail='The task has been completed, but there might have been some errors, please submit again.', )
 
     return JSONResponse(content={
-        'code': 200 if not worker.error else 406,
-        **worker.get_state()
+        **task.get_state()
     },
         status_code=status.HTTP_200_OK)
 
 
 @app.get("/download")
 async def download(process_id: str):
-    worker: Worker = workers.get(process_id)
-    if worker is None:
-        return JSONResponse(content={
-            'code': 200,
-            'msg': f'Error process_id: {process_id}'
-        },
-            status_code=status.HTTP_404_NOT_FOUND)
+    task: Worker = workers.get(process_id)
+    if task is None:
+        raise HTTPException(404, detail=f'Error process_id: {process_id}', )
 
-    if not worker.isFinished:
-        return JSONResponse(content={
-            'code': 200,
-            'msg': f'The work is not finished yet, please try again later.'
-        },
-            status_code=status.HTTP_406_NOT_ACCEPTABLE)
+    if not task.isFinished:
+        raise HTTPException(406, detail='The task is not finished yet, please try again later.', )
 
-    if worker.error or worker.output_path == '' or not os.path.isfile(worker.output_path):
-        return HTTPException(404,
-                             detail='The work has been completed, but the file was not found. There might have been some errors, please submit again.', )
+    if task.error or task.output_path == '' or not os.path.isfile(task.output_path):
+        raise HTTPException(500,
+                            detail='The task has been completed, but the file was not found. There might have been some errors, please submit again.', )
 
     return FileResponse(
-        path=worker.output_path,
-        media_type="application/octet-stream",  # 可以根据文件类型进行调整
-        headers={"Content-Disposition": f"attachment; filename={Path(worker.output_path).name}"}
+        path=task.output_path,
+        media_type="application/octet-stream",
+        filename=Path(task.output_path).name,
     )
 
 
