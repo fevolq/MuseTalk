@@ -1,8 +1,9 @@
 import os
 
 PORT = 7860
-MAX_POOL = 4
+MAX_POOL = 1
 FLOAT16 = False
+RELEASE = True
 
 MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../models'))
 INPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../results/input'))

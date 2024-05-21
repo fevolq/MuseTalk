@@ -12,6 +12,7 @@ def cli():
     parser.add_argument('--port', type=int, default=config.PORT, help="run the program with api")
     parser.add_argument("--max-pool", type=int, default=config.MAX_POOL, help="Max pool size (must be >= 1)")
     parser.add_argument("--float16", action="store_true", help="Whether use float16 to speed up inference", )
+    parser.add_argument("--release", action="store_true", help="Whether release cuda cache", )
 
     # options
     group_options = parser.add_argument_group('options')
@@ -27,6 +28,7 @@ def apply_parser(args) -> None:
     config.PORT = args.port
     config.MAX_POOL = args.max_pool
     config.FLOAT16 = args.float16
+    config.RELEASE = args.release
 
 
 def run(program: ArgumentParser) -> None:

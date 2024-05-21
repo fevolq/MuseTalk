@@ -70,7 +70,8 @@ class Worker:
         """清除显存"""
         if self.process is not None:
             self.process = None
-        torch.cuda.empty_cache()
+        if config.RELEASE:
+            torch.cuda.empty_cache()
 
     def get_state(self):
         return {

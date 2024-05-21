@@ -4,7 +4,7 @@ name: ${NAME:- musetalk }
 
 services:
   musetalk:
-    image: musetalk:0.0.1
+    image: musetalk:0.0.2
     build:
       context: .
       dockerfile: Dockerfile
