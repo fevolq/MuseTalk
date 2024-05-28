@@ -8,7 +8,6 @@ WORKDIR /app
 
 COPY requirements.txt /app
 RUN pip install -r requirements.txt
-RUN pip install -r requirements.txt
 RUN pip install --no-cache-dir -U openmim
 RUN mim install "mmcv>=2.0.1"
 RUN mim install "mmdet>=3.1.0"
