@@ -1,21 +1,27 @@
 version: '3.9'
 
-name: ${NAME:- musetalk }
+name: ${NAME:-musetalk}
 
 services:
   musetalk:
-    image: musetalk:0.0.2
+    image: musetalk:0.0.3
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "${PORT:- 7860 }:7860"
+      - "${PORT:-7860}:7860"
     environment:
         - CLI_ARGS=--api
     volumes:
-      - ${MODELS_DIR:- ./models}:/app/models
-      - ${RESULT_DIR:- ./results}:/app/results
-    restart: on-failure
+      - ${MODELS_DIR:-./models}:/app/models
+      - ${RESULT_DIR:-./results}:/app/results
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:7860/connect || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
     deploy:
       resources:
         reservations:

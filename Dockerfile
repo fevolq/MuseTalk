@@ -1,7 +1,7 @@
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 RUN apt-get update && \
-    apt-get install -y python3.10 python-is-python3 pip ffmpeg && \
+    apt-get install -y python3.10 python-is-python3 pip ffmpeg curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

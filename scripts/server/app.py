@@ -90,6 +90,11 @@ def submit_worker(worker: Worker) -> bool:
     return success
 
 
+@app.get("/connect")
+async def connect():
+    return "Hello World!"
+
+
 @app.post("/submit")
 async def submit(
         options: str = Form(None),
