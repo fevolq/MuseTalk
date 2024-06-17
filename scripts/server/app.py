@@ -2,7 +2,7 @@ import copy
 import json
 import uuid
 from pathlib import Path
-from multiprocessing import Value, Lock
+# from multiprocessing import Value, Lock
 
 import torch
 import uvicorn
@@ -19,8 +19,9 @@ app = FastAPI()
 workers = {}
 default_options: dict = {}
 
-NORMAL_CUDA = Value('b', True)
-cuda_lock = Lock()
+# NORMAL_CUDA = Value('b', True)
+# cuda_lock = Lock()
+NORMAL_CUDA = True
 
 
 class Worker:
@@ -96,14 +97,18 @@ def submit_worker(worker: Worker) -> bool:
 
 @app.get("/health")
 async def health():
-    return NORMAL_CUDA.value
+    # return NORMAL_CUDA.value
+    return NORMAL_CUDA
 
 
 @app.exception_handler(RuntimeError)
 async def handle_cuda_error(request, exc):
-    with cuda_lock:
-        if str(exc).find('CUDA') > -1:
-            NORMAL_CUDA.value = False
+    # with cuda_lock:
+    #     if str(exc).find('CUDA') > -1:
+    #         NORMAL_CUDA.value = False
+    global NORMAL_CUDA
+    if str(exc).find('CUDA') > -1:
+        NORMAL_CUDA = False
 
     raise exc
 

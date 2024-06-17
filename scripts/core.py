@@ -9,7 +9,7 @@ def cli():
 
     # generate
     parser.add_argument("--api", action="store_true", help="run the program with api")
-    parser.add_argument('--port', type=int, default=config.PORT, help="run the program with api")
+    parser.add_argument('--port', type=int, default=config.PORT, help="run the program with port")
     parser.add_argument("--max-pool", type=int, default=config.MAX_POOL, help="Max pool size (must be >= 1)")
     parser.add_argument("--float16", action="store_true", help="Whether use float16 to speed up inference", )
     parser.add_argument("--release", action="store_true", help="Whether release cuda cache", )

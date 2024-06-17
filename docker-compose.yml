@@ -17,7 +17,7 @@ services:
       - ${RESULT_DIR:-./results}:/app/results
     restart: always
     healthcheck:
-      test: [ "CMD-SHELL", "curl -f http://localhost:7860/health || exit 1" ]
+      test: [ "CMD-SHELL", "curl -f http://localhost:7860/health | grep -q 'true' || exit 1" ]
       interval: 30s
       timeout: 5s
       start_period: 300s
